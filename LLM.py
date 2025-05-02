@@ -130,6 +130,8 @@ def on_message(ws, message):
             elif event_type == "response.text.delta":
                 # Only print the delta if not interrupted
                 if not interrupted:
+                    if current_response != '':
+                        text_delta = 'MODEL: '
                     text_delta = data.get("delta", "")
                     if text_delta:
                         print(text_delta, end="", flush=True)

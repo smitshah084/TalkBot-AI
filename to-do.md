@@ -15,5 +15,12 @@ Idea:
         
         SOl: let LLM start genarateing resposne after a enter is pressed. detect the completion of user input using VAD on audio before STT.
 
+2. Genral Project data flow:
+        twilio connects call
+        audio stream from call as input to STT and VAD models
+        text stream from STT and signal from VAD as input to LLM
+        LLM streams text as input to TTS
+        audio stream from TTS as outgoing voice to twilio
+
         
         
