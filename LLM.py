@@ -27,278 +27,292 @@ headers = [
     "OpenAI-Beta: realtime=v1"
 ]
 
-# Global variables
-ws = None
-session_ready = False
-response_in_progress = False
-current_response = ""
-debug_mode = False
-user_input_buffer = ""
-interrupted = False
-original_terminal_settings = None
+class ChatSystem:
+    def __init__(self):
+        self.ws = None
+        self.session_ready = False
+        self.response_in_progress = False
+        self.current_response = ""
+        self.debug_mode = False
+        self.user_input_buffer = ""
+        self.interrupted = False
+        self.original_terminal_settings = None
 
-def save_terminal_settings():
-    """Save the terminal settings to restore later."""
-    global original_terminal_settings
-    if sys.stdin.isatty():
-        original_terminal_settings = termios.tcgetattr(sys.stdin)
+    def save_terminal_settings(self):
+        """Save the terminal settings to restore later."""
+        if sys.stdin.isatty():
+            self.original_terminal_settings = termios.tcgetattr(sys.stdin)
 
-def set_raw_input_mode():
-    """Set the terminal to raw mode to capture keystrokes without requiring Enter."""
-    if sys.stdin.isatty():
-        tty.setraw(sys.stdin.fileno(), termios.TCSANOW)
+    def set_raw_input_mode(self):
+        """Set the terminal to raw mode to capture keystrokes without requiring Enter."""
+        if sys.stdin.isatty():
+            tty.setraw(sys.stdin.fileno(), termios.TCSANOW)
 
-def restore_terminal_settings():
-    """Restore the original terminal settings."""
-    global original_terminal_settings
-    if sys.stdin.isatty() and original_terminal_settings:
-        termios.tcsetattr(sys.stdin, termios.TCSANOW, original_terminal_settings)
+    def restore_terminal_settings(self):
+        """Restore the original terminal settings."""
+        if sys.stdin.isatty() and self.original_terminal_settings:
+            termios.tcsetattr(sys.stdin, termios.TCSANOW, self.original_terminal_settings)
 
-def send_event(event_data):
-    """Send an event to the WebSocket server."""
-    if ws and ws.sock and ws.sock.connected:
-        ws.send(json.dumps(event_data))
-    else:
-        print("WebSocket not connected. Cannot send event.")
-
-def send_user_message(message):
-    """Send a user message to the conversation."""
-    event = {
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": message,
-                }
-            ]
-        }
-    }
-    send_event(event)
-    print("\nSending message to model...\n")
-
-def request_response():
-    """Request a response from the model."""
-    global response_in_progress, current_response
-    response_in_progress = True
-    current_response = ""
-    
-    event = {
-        "type": "response.create",
-        "response": {
-            "modalities": ["text"]
-        }
-    }
-    send_event(event)
-
-def update_session_instructions(instructions):
-    """Update the session instructions."""
-    event = {
-        "type": "session.update",
-        "session": {
-            "instructions": instructions
-        }
-    }
-    send_event(event)
-    print(f"Updating session instructions...")
-
-def on_open(ws):
-    """Callback when WebSocket connection is established."""
-    print("✓ Connected to OpenAI Realtime API")
-    print("Enter your message (type '/exit' to quit, '/help' for commands):")
-
-def on_message(ws, message):
-    """Callback when a message is received from the server."""
-    global session_ready, response_in_progress, current_response, debug_mode, interrupted
-
-    try:
-        data = json.loads(message)
-
-        # Check the type of event
-        if "type" in data:
-            event_type = data["type"]
-
-            if event_type == "session.created":
-                session_ready = True
-                print("✓ Session created and ready")
-
-            elif event_type == "session.updated":
-                print("✓ Session instructions updated")
-
-            elif event_type == "response.text.delta":
-                # Only print the delta if not interrupted
-                if not interrupted:
-                    if current_response != '':
-                        text_delta = 'MODEL: '
-                    text_delta = data.get("delta", "")
-                    if text_delta:
-                        print(text_delta, end="", flush=True)
-                        current_response += text_delta
-
-            elif event_type == "response.done":
-                response_in_progress = False
-                if not interrupted:
-                    print("\n\n--- Response complete ---\n")
-                interrupted = False
-
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON: {e}")
-        print(f"Raw message: {message}")
-    except Exception as e:
-        print(f"Error processing message: {e}")
-        print(f"Message that caused error: {message}")
-
-def on_error(ws, error):
-    """Callback for WebSocket errors."""
-    print(f"Error: {error}")
-
-def on_close(ws, close_status_code, close_msg):
-    """Callback when WebSocket connection is closed."""
-    print(f"Connection closed: {close_status_code} - {close_msg}")
-
-def interrupt_response():
-    """Interrupt the current response generation."""
-    global response_in_progress, interrupted
-    
-    if response_in_progress:
-        # Mark as interrupted to stop processing further deltas
-        interrupted = True
-        response_in_progress = False
-        print("\n\n--- Response interrupted ---\n")
-        return True
-    return False
-
-def key_watcher_thread():
-    """Thread function to watch for keypresses during response generation."""
-    global user_input_buffer, response_in_progress, interrupted
-    
-    while True:
-        try:
-            # Only check for keystrokes if we're in response mode
-            if response_in_progress and sys.stdin.isatty():
-                # Check if there's data ready to be read
-                if select.select([sys.stdin], [], [], 0.1)[0]:
-                    char = sys.stdin.read(1)
-                    
-                    # If any key is pressed while the model is responding
-                    if char:
-                        # Interrupt the current response
-                        if interrupt_response():
-                            # Store this character as the beginning of the next input
-                            user_input_buffer = char
-                            # Reset terminal to normal mode to collect the rest of the input
-                            restore_terminal_settings()
-                            # Print a new line for user input
-                            print("You: " + char, end="", flush=True)
-                            # Wait a bit for the terminal to normalize
-                            time.sleep(0.1)
-                            break
-            
-            # Sleep to avoid high CPU usage
-            time.sleep(0.1)
-                
-        except Exception as e:
-            print(f"Error in key watcher: {e}")
-            time.sleep(1)  # Sleep on error to avoid spinning
-
-def input_thread_function():
-    """Thread function to handle user input."""
-    global ws, session_ready, debug_mode, user_input_buffer, response_in_progress
-    
-    while True:
-        # Wait for session to be ready before accepting input
-        if not session_ready:
-            time.sleep(0.5)
-            continue
-            
-        # Wait if a response is currently being generated
-        if response_in_progress:
-            # Start a key watcher thread when in response mode
-            key_thread = threading.Thread(target=key_watcher_thread)
-            key_thread.daemon = True
-            key_thread.start()
-            
-            # Wait for the key watcher to finish or response to complete
-            while response_in_progress and key_thread.is_alive():
-                time.sleep(0.1)
-            
-            # If we've been interrupted, collect the rest of the input
-            if user_input_buffer:
-                # Get the rest of the input after the first character
-                rest_of_input = input("")
-                user_input = user_input_buffer + rest_of_input
-                user_input_buffer = ""
-            else:
-                continue
+    def send_event(self, event_data):
+        """Send an event to the WebSocket server."""
+        if self.ws and self.ws.sock and self.ws.sock.connected:
+            self.ws.send(json.dumps(event_data))
         else:
-            try:
-                # Set terminal to normal mode for regular input
-                restore_terminal_settings()
-                user_input = input("\nYou: ")
-            except EOFError:
-                print("\nExiting due to EOF...")
-                ws.close()
-                break
-            
-        # Check for commands
-        if user_input.lower() == '/exit':
-            print("Exiting...")
-            ws.close()
-            break
-        elif user_input.lower() == '/help':
-            print("\nCommands:")
-            print("  /exit - Exit the application")
-            print("  /help - Show this help message")
-            print("  /instructions <text> - Update session instructions")
-            print("  /debug - Toggle debug mode")
-            continue
-        elif user_input.lower().startswith('/instructions '):
-            instructions = user_input[14:].strip()
-            update_session_instructions(instructions)
-            continue
-        elif user_input.lower() == '/debug':
-            debug_mode = not debug_mode
-            print(f"Debug mode {'enabled' if debug_mode else 'disabled'}")
-            continue
-        elif not user_input.strip():
-            continue
-            
-        # Normal message flow
-        send_user_message(user_input)
-        request_response()
-        
-        # Set terminal to raw mode to capture keypresses during response
-        set_raw_input_mode()
+            print("WebSocket not connected. Cannot send event.")
 
-def main():
-    global ws
-    
-    try:
+    def send_user_message(self, message):
+        """Send a user message to the conversation."""
+        event = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": message,
+                    }
+                ]
+            }
+        }
+        self.send_event(event)
+        print("\nSending message to model...\n")
+
+    def request_response(self):
+        """Request a response from the model."""
+        self.response_in_progress = True
+        self.current_response = ""
+        
+        event = {
+            "type": "response.create",
+            "response": {
+                "modalities": ["text"]
+            }
+        }
+        self.send_event(event)
+
+    def update_session_instructions(self, instructions):
+        """Update the session instructions."""
+        event = {
+            "type": "session.update",
+            "session": {
+                "instructions": instructions
+            }
+        }
+        self.send_event(event)
+        print(f"Updating session instructions...")
+
+    def on_open(self, ws):
+        """Callback when WebSocket connection is established."""
+        print("✓ Connected to OpenAI Realtime API")
+        print("Enter your message (type '/exit' to quit, '/help' for commands):")
+
+    def on_message(self, ws, message):
+        """Callback when a message is received from the server."""
+        try:
+            data = json.loads(message)
+
+            # Check the type of event
+            if "type" in data:
+                event_type = data["type"]
+
+                if event_type == "session.created":
+                    self.session_ready = True
+                    print("✓ Session created and ready")
+
+                elif event_type == "session.updated":
+                    print("✓ Session instructions updated")
+
+                elif event_type == "response.text.delta":
+                    # Only print the delta if not interrupted
+                    if not self.interrupted:
+                        if self.current_response != '':
+                            text_delta = 'MODEL: '
+                        text_delta = data.get("delta", "")
+                        if text_delta:
+                            print(text_delta, end="", flush=True)
+                            self.current_response += text_delta
+
+                elif event_type == "response.done":
+                    self.response_in_progress = False
+                    if not self.interrupted:
+                        print("\n\n--- Response complete ---\n")
+                    self.interrupted = False
+
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON: {e}")
+            print(f"Raw message: {message}")
+        except Exception as e:
+            print(f"Error processing message: {e}")
+            print(f"Message that caused error: {message}")
+
+    def on_error(self, ws, error):
+        """Callback for WebSocket errors."""
+        print(f"Error: {error}")
+
+    def on_close(self, ws, close_status_code, close_msg):
+        """Callback when WebSocket connection is closed."""
+        print(f"Connection closed: {close_status_code} - {close_msg}")
+
+    def interrupt_response(self):
+        """Interrupt the current response generation."""
+        if self.response_in_progress:
+            # Mark as interrupted to stop processing further deltas
+            self.interrupted = True
+            self.response_in_progress = False
+            print("\n\n--- Response interrupted ---\n")
+            return True
+        return False
+
+    def key_watcher_thread(self):
+        """Thread function to watch for keypresses during response generation."""
+        while True:
+            try:
+                # Only check for keystrokes if we're in response mode
+                if self.response_in_progress and sys.stdin.isatty():
+                    # Check if there's data ready to be read
+                    if select.select([sys.stdin], [], [], 0.1)[0]:
+                        char = sys.stdin.read(1)
+                        
+                        # If any key is pressed while the model is responding
+                        if char:
+                            # Interrupt the current response
+                            if self.interrupt_response():
+                                # Store this character as the beginning of the next input
+                                self.user_input_buffer = char
+                                # Reset terminal to normal mode to collect the rest of the input
+                                self.restore_terminal_settings()
+                                # Print a new line for user input
+                                print("You: " + char, end="", flush=True)
+                                # Wait a bit for the terminal to normalize
+                                time.sleep(0.1)
+                                break
+                
+                # Sleep to avoid high CPU usage
+                time.sleep(0.1)
+                    
+            except Exception as e:
+                print(f"Error in key watcher: {e}")
+                time.sleep(1)  # Sleep on error to avoid spinning
+
+    def input_thread_function(self):
+        """Thread function to handle user input."""
+        while True:
+            # Wait for session to be ready before accepting input
+            if not self.session_ready:
+                time.sleep(0.5)
+                continue
+                
+            # Wait if a response is currently being generated
+            if self.response_in_progress:
+                # Start a key watcher thread when in response mode
+                key_thread = threading.Thread(target=self.key_watcher_thread)
+                key_thread.daemon = True
+                key_thread.start()
+                
+                # Wait for the key watcher to finish or response to complete
+                while self.response_in_progress and key_thread.is_alive():
+                    time.sleep(0.1)
+                
+                # If we've been interrupted, collect the rest of the input
+                if self.user_input_buffer:
+                    # Get the rest of the input after the first character
+                    rest_of_input = input("")
+                    user_input = self.user_input_buffer + rest_of_input
+                    self.user_input_buffer = ""
+                else:
+                    continue
+            else:
+                try:
+                    # Set terminal to normal mode for regular input
+                    self.restore_terminal_settings()
+                    user_input = input("\nYou: ")
+                except EOFError:
+                    print("\nExiting due to EOF...")
+                    self.ws.close()
+                    break
+                
+            # Check for commands
+            if user_input.lower() == '/exit':
+                print("Exiting...")
+                self.ws.close()
+                break
+            elif user_input.lower() == '/help':
+                print("\nCommands:")
+                print("  /exit - Exit the application")
+                print("  /help - Show this help message")
+                print("  /instructions <text> - Update session instructions")
+                print("  /debug - Toggle debug mode")
+                continue
+            elif user_input.lower().startswith('/instructions '):
+                instructions = user_input[14:].strip()
+                self.update_session_instructions(instructions)
+                continue
+            elif user_input.lower() == '/debug':
+                self.debug_mode = not self.debug_mode
+                print(f"Debug mode {'enabled' if self.debug_mode else 'disabled'}")
+                continue
+            elif not user_input.strip():
+                continue
+                
+            # Normal message flow
+            self.send_user_message(user_input)
+            self.request_response()
+            
+            # Set terminal to raw mode to capture keypresses during response
+            self.set_raw_input_mode()
+
+    def handle_voice_input(self, text):
+        """Handle incoming voice transcription"""
+        if self.response_in_progress:
+            # Interrupt current response if one is in progress
+            self.interrupt_response()
+            print(f"\nVoice: {text}")
+            self.send_user_message(text)
+            self.request_response()
+        else:
+            print(f"\nVoice: {text}")
+            self.send_user_message(text)
+            self.request_response()
+
+    def start(self):
         # Save original terminal settings
-        save_terminal_settings()
+        self.save_terminal_settings()
         
         # Set up WebSocket connection
-        websocket.enableTrace(False)  # Set to True for debugging
-        ws = websocket.WebSocketApp(
+        websocket.enableTrace(False)
+        self.ws = websocket.WebSocketApp(
             url,
             header=headers,
-            on_open=on_open,
-            on_message=on_message,
-            on_error=on_error,
-            on_close=on_close
+            on_open=self.on_open,
+            on_message=self.on_message,
+            on_error=self.on_error,
+            on_close=self.on_close
         )
         
         # Start WebSocket connection in a separate thread
-        wst = threading.Thread(target=ws.run_forever)
+        wst = threading.Thread(target=self.ws.run_forever)
         wst.daemon = True
         wst.start()
         
         # Start input thread
-        input_thread = threading.Thread(target=input_thread_function)
+        input_thread = threading.Thread(target=self.input_thread_function)
         input_thread.daemon = True
         input_thread.start()
+        
+        return wst, input_thread
+
+    def stop(self):
+        if self.ws:
+            self.ws.close()
+        self.restore_terminal_settings()
+
+def main():
+    chat_system = ChatSystem()
+    
+    try:
+        # Start the chat system
+        wst, input_thread = chat_system.start()
         
         # Wait for threads to complete
         try:
@@ -306,10 +320,10 @@ def main():
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("\nInterrupted by user, shutting down...")
-            ws.close()
+            chat_system.stop()
     finally:
         # Always restore terminal settings when exiting
-        restore_terminal_settings()
+        chat_system.restore_terminal_settings()
 
 if __name__ == "__main__":
     print("Starting OpenAI Realtime Chat...")

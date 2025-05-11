@@ -99,24 +99,51 @@ def on_open(ws):
             ws.close()
     threading.Thread(target=run).start()
 
-# Main
-if __name__ == "__main__":
-    token = get_ephemeral_token()
-    if not token:
-        exit(1)
+class SpeechToText:
+    def __init__(self, on_transcription=None):
+        self.on_transcription = on_transcription
+        self.ws = None
+        
+    def on_message(self, ws, message):
+        try:
+            data = json.loads(message)
+            if 'type' in data:
+                if data['type'] == 'speech.started':
+                    print("\n[Voice input detected...]")
+                elif data['type'] == 'speech.stopped':
+                    print("[Voice input stopped]")
+                
+            transcript = data.get('transcript')
+            if transcript and self.on_transcription:
+                self.on_transcription(transcript)
+        except Exception as e:
+            print("Error parsing message:", e)
 
-    ws_url = "wss://api.openai.com/v1/realtime?intent=transcription"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "openai-beta": "realtime=v1"
-    }
+    def start(self):
+        token = get_ephemeral_token()
+        if not token:
+            return False
 
-    ws = websocket.WebSocketApp(
-        ws_url,
-        header=headers,
-        on_open=on_open,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close
-    )
-    ws.run_forever()
+        ws_url = "wss://api.openai.com/v1/realtime?intent=transcription"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "openai-beta": "realtime=v1"
+        }
+
+        self.ws = websocket.WebSocketApp(
+            ws_url,
+            header=headers,
+            on_open=on_open,
+            on_message=self.on_message,
+            on_error=on_error,
+            on_close=on_close
+        )
+        
+        wst = threading.Thread(target=self.ws.run_forever)
+        wst.daemon = True
+        wst.start()
+        return True
+
+    def stop(self):
+        if self.ws:
+            self.ws.close()
