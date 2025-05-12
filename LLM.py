@@ -2,12 +2,8 @@ import json
 import os
 import websocket
 import threading
+import asyncio
 import time
-import readline  # For better command line input handling
-import sys
-import select
-import tty
-import termios
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -33,35 +29,40 @@ class ChatSystem:
         self.session_ready = False
         self.response_in_progress = False
         self.current_response = ""
-        self.debug_mode = False
-        self.user_input_buffer = ""
+        self.current_delta = ""
+        self.delta_buffer = []  # Buffer to collect deltas
         self.interrupted = False
-        self.original_terminal_settings = None
+        self.connection_event = threading.Event()
 
-    def save_terminal_settings(self):
-        """Save the terminal settings to restore later."""
-        if sys.stdin.isatty():
-            self.original_terminal_settings = termios.tcgetattr(sys.stdin)
-
-    def set_raw_input_mode(self):
-        """Set the terminal to raw mode to capture keystrokes without requiring Enter."""
-        if sys.stdin.isatty():
-            tty.setraw(sys.stdin.fileno(), termios.TCSANOW)
-
-    def restore_terminal_settings(self):
-        """Restore the original terminal settings."""
-        if sys.stdin.isatty() and self.original_terminal_settings:
-            termios.tcsetattr(sys.stdin, termios.TCSANOW, self.original_terminal_settings)
+    async def ensure_connection(self):
+        """Ensure WebSocket is connected and session is ready"""
+        if not self.ws or not self.ws.sock or not self.ws.sock.connected:
+            self.connection_event.clear()
+            self.start()
+            
+            # Wait for connection with timeout
+            timeout = 10  # 10 seconds timeout
+            start_time = time.time()
+            while not self.session_ready and time.time() - start_time < timeout:
+                await asyncio.sleep(0.1)
+            
+            if not self.session_ready:
+                raise RuntimeError("Failed to establish WebSocket connection")
 
     def send_event(self, event_data):
-        """Send an event to the WebSocket server."""
-        if self.ws and self.ws.sock and self.ws.sock.connected:
+        """Send an event to the WebSocket server"""
+        if not self.ws or not self.ws.sock or not self.ws.sock.connected:
+            raise RuntimeError("WebSocket not connected")
+        try:
             self.ws.send(json.dumps(event_data))
-        else:
-            print("WebSocket not connected. Cannot send event.")
+        except Exception as e:
+            print(f"Error sending event: {e}")
+            raise
 
-    def send_user_message(self, message):
-        """Send a user message to the conversation."""
+    async def send_user_message(self, message):
+        """Send a user message asynchronously"""
+        await self.ensure_connection()
+        
         event = {
             "type": "conversation.item.create",
             "item": {
@@ -76,10 +77,11 @@ class ChatSystem:
             }
         }
         self.send_event(event)
-        print("\nSending message to model...\n")
 
-    def request_response(self):
-        """Request a response from the model."""
+    async def request_response(self):
+        """Request a response asynchronously"""
+        await self.ensure_connection()
+        
         self.response_in_progress = True
         self.current_response = ""
         
@@ -92,7 +94,6 @@ class ChatSystem:
         self.send_event(event)
 
     def update_session_instructions(self, instructions):
-        """Update the session instructions."""
         event = {
             "type": "session.update",
             "session": {
@@ -100,186 +101,64 @@ class ChatSystem:
             }
         }
         self.send_event(event)
-        print(f"Updating session instructions...")
 
     def on_open(self, ws):
-        """Callback when WebSocket connection is established."""
         print("✓ Connected to OpenAI Realtime API")
-        print("Enter your message (type '/exit' to quit, '/help' for commands):")
 
     def on_message(self, ws, message):
-        """Callback when a message is received from the server."""
         try:
             data = json.loads(message)
-
-            # Check the type of event
             if "type" in data:
                 event_type = data["type"]
 
                 if event_type == "session.created":
                     self.session_ready = True
-                    print("✓ Session created and ready")
-
-                elif event_type == "session.updated":
-                    print("✓ Session instructions updated")
+                    self.connection_event.set()
 
                 elif event_type == "response.text.delta":
-                    # Only print the delta if not interrupted
                     if not self.interrupted:
-                        if self.current_response != '':
-                            text_delta = 'MODEL: '
                         text_delta = data.get("delta", "")
                         if text_delta:
-                            print(text_delta, end="", flush=True)
+                            self.current_delta = text_delta
+                            self.delta_buffer.append(text_delta)  # Add to buffer
                             self.current_response += text_delta
 
                 elif event_type == "response.done":
+                    if len(self.delta_buffer) > 0:
+                        # Join all deltas into one final delta before marking as complete
+                        self.current_delta = "".join(self.delta_buffer)
+                        self.delta_buffer = []  # Clear buffer
                     self.response_in_progress = False
-                    if not self.interrupted:
-                        print("\n\n--- Response complete ---\n")
                     self.interrupted = False
 
         except json.JSONDecodeError as e:
             print(f"Error decoding JSON: {e}")
-            print(f"Raw message: {message}")
         except Exception as e:
             print(f"Error processing message: {e}")
-            print(f"Message that caused error: {message}")
 
     def on_error(self, ws, error):
-        """Callback for WebSocket errors."""
         print(f"Error: {error}")
+        self.connection_event.set()  # Unblock waiting threads
 
     def on_close(self, ws, close_status_code, close_msg):
-        """Callback when WebSocket connection is closed."""
         print(f"Connection closed: {close_status_code} - {close_msg}")
+        self.session_ready = False
+        self.connection_event.set()  # Unblock waiting threads
 
     def interrupt_response(self):
-        """Interrupt the current response generation."""
         if self.response_in_progress:
-            # Mark as interrupted to stop processing further deltas
             self.interrupted = True
             self.response_in_progress = False
-            print("\n\n--- Response interrupted ---\n")
             return True
         return False
 
-    def key_watcher_thread(self):
-        """Thread function to watch for keypresses during response generation."""
-        while True:
-            try:
-                # Only check for keystrokes if we're in response mode
-                if self.response_in_progress and sys.stdin.isatty():
-                    # Check if there's data ready to be read
-                    if select.select([sys.stdin], [], [], 0.1)[0]:
-                        char = sys.stdin.read(1)
-                        
-                        # If any key is pressed while the model is responding
-                        if char:
-                            # Interrupt the current response
-                            if self.interrupt_response():
-                                # Store this character as the beginning of the next input
-                                self.user_input_buffer = char
-                                # Reset terminal to normal mode to collect the rest of the input
-                                self.restore_terminal_settings()
-                                # Print a new line for user input
-                                print("You: " + char, end="", flush=True)
-                                # Wait a bit for the terminal to normalize
-                                time.sleep(0.1)
-                                break
-                
-                # Sleep to avoid high CPU usage
-                time.sleep(0.1)
-                    
-            except Exception as e:
-                print(f"Error in key watcher: {e}")
-                time.sleep(1)  # Sleep on error to avoid spinning
-
-    def input_thread_function(self):
-        """Thread function to handle user input."""
-        while True:
-            # Wait for session to be ready before accepting input
-            if not self.session_ready:
-                time.sleep(0.5)
-                continue
-                
-            # Wait if a response is currently being generated
-            if self.response_in_progress:
-                # Start a key watcher thread when in response mode
-                key_thread = threading.Thread(target=self.key_watcher_thread)
-                key_thread.daemon = True
-                key_thread.start()
-                
-                # Wait for the key watcher to finish or response to complete
-                while self.response_in_progress and key_thread.is_alive():
-                    time.sleep(0.1)
-                
-                # If we've been interrupted, collect the rest of the input
-                if self.user_input_buffer:
-                    # Get the rest of the input after the first character
-                    rest_of_input = input("")
-                    user_input = self.user_input_buffer + rest_of_input
-                    self.user_input_buffer = ""
-                else:
-                    continue
-            else:
-                try:
-                    # Set terminal to normal mode for regular input
-                    self.restore_terminal_settings()
-                    user_input = input("\nYou: ")
-                except EOFError:
-                    print("\nExiting due to EOF...")
-                    self.ws.close()
-                    break
-                
-            # Check for commands
-            if user_input.lower() == '/exit':
-                print("Exiting...")
-                self.ws.close()
-                break
-            elif user_input.lower() == '/help':
-                print("\nCommands:")
-                print("  /exit - Exit the application")
-                print("  /help - Show this help message")
-                print("  /instructions <text> - Update session instructions")
-                print("  /debug - Toggle debug mode")
-                continue
-            elif user_input.lower().startswith('/instructions '):
-                instructions = user_input[14:].strip()
-                self.update_session_instructions(instructions)
-                continue
-            elif user_input.lower() == '/debug':
-                self.debug_mode = not self.debug_mode
-                print(f"Debug mode {'enabled' if self.debug_mode else 'disabled'}")
-                continue
-            elif not user_input.strip():
-                continue
-                
-            # Normal message flow
-            self.send_user_message(user_input)
-            self.request_response()
-            
-            # Set terminal to raw mode to capture keypresses during response
-            self.set_raw_input_mode()
-
-    def handle_voice_input(self, text):
-        """Handle incoming voice transcription"""
+    async def handle_voice_input(self, text):
         if self.response_in_progress:
-            # Interrupt current response if one is in progress
             self.interrupt_response()
-            print(f"\nVoice: {text}")
-            self.send_user_message(text)
-            self.request_response()
-        else:
-            print(f"\nVoice: {text}")
-            self.send_user_message(text)
-            self.request_response()
+        await self.send_user_message(text)
+        await self.request_response()
 
     def start(self):
-        # Save original terminal settings
-        self.save_terminal_settings()
-        
-        # Set up WebSocket connection
         websocket.enableTrace(False)
         self.ws = websocket.WebSocketApp(
             url,
@@ -290,29 +169,23 @@ class ChatSystem:
             on_close=self.on_close
         )
         
-        # Start WebSocket connection in a separate thread
         wst = threading.Thread(target=self.ws.run_forever)
         wst.daemon = True
         wst.start()
         
-        # Start input thread
-        input_thread = threading.Thread(target=self.input_thread_function)
-        input_thread.daemon = True
-        input_thread.start()
-        
-        return wst, input_thread
+        return wst
 
     def stop(self):
         if self.ws:
             self.ws.close()
-        self.restore_terminal_settings()
+            self.session_ready = False
 
 def main():
     chat_system = ChatSystem()
     
     try:
         # Start the chat system
-        wst, input_thread = chat_system.start()
+        wst = chat_system.start()
         
         # Wait for threads to complete
         try:
@@ -323,7 +196,7 @@ def main():
             chat_system.stop()
     finally:
         # Always restore terminal settings when exiting
-        chat_system.restore_terminal_settings()
+        chat_system.stop()
 
 if __name__ == "__main__":
     print("Starting OpenAI Realtime Chat...")

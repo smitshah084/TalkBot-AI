@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TalkBot AI Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #chat-container {
+            border: 1px solid #ccc;
+            padding: 20px;
+            height: 400px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+        #input-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        #message-input {
+            flex-grow: 1;
+            padding: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .user-message {
+            background-color: #e9ecef;
+            margin-left: 20%;
+        }
+        .bot-message {
+            background-color: #007bff;
+            color: white;
+            margin-right: 20%;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 10px;
+            background-color: #dc3545;
+        }
+        .status-indicator.connected {
+            background-color: #28a745;
+        }
+        .status-container {
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>TalkBot AI Chat</h1>
+    <div class="status-container">
+        <span class="status-indicator"></span>
+        <span class="status-text">Disconnected</span>
+    </div>
+    <div id="chat-container"></div>
+    <div id="input-container">
+        <input type="text" id="message-input" placeholder="Type your message...">
+        <button onclick="sendMessage()">Send</button>
+        <button id="voice-button" onclick="toggleVoice()">Start Voice</button>
+    </div>
+
+    <script>
+        let ws = null;
+        let isRecording = false;
+        let mediaRecorder = null;
+        let currentMessageDiv = null;
+        let reconnectAttempts = 0;
+        let reconnectTimeout = null;
+        let responseBuffer = [];
+
+        function updateConnectionStatus(connected) {
+            const indicator = document.querySelector('.status-indicator');
+            const statusText = document.querySelector('.status-text');
+            
+            if (connected) {
+                indicator.classList.add('connected');
+                statusText.textContent = 'Connected';
+            } else {
+                indicator.classList.remove('connected');
+                statusText.textContent = 'Disconnected';
+            }
+        }
+
+        // Text chat functionality with SSE
+        async function sendMessage() {
+            const input = document.getElementById('message-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            addMessage(message, 'user');
+            input.value = '';
+
+            try {
+                const response = await fetch('/chat/text', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ text: message }),
+                });
+
+                // Create a message div for the response
+                currentMessageDiv = document.createElement('div');
+                currentMessageDiv.className = 'message bot-message';
+                document.getElementById('chat-container').appendChild(currentMessageDiv);
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop() || ''; // Keep the incomplete chunk in the buffer
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                
+                                if (data.error) {
+                                    currentMessageDiv.textContent = `Error: ${data.error}`;
+                                    currentMessageDiv = null;
+                                    break;
+                                }
+                                
+                                if (data.delta) {
+                                    currentMessageDiv.textContent += data.delta;
+                                    scrollToBottom();
+                                }
+                                
+                                if (data.done) {
+                                    // Verify the complete response
+                                    if (data.full_response && currentMessageDiv.textContent !== data.full_response) {
+                                        currentMessageDiv.textContent = data.full_response;
+                                    }
+                                    currentMessageDiv = null;
+                                    scrollToBottom();
+                                }
+                            } catch (e) {
+                                console.error('Error parsing SSE data:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('Error: Could not send message', 'bot');
+            }
+        }
+
+        function addMessage(text, sender) {
+            const container = document.getElementById('chat-container');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}-message`;
+            messageDiv.textContent = text;
+            container.appendChild(messageDiv);
+            scrollToBottom();
+        }
+
+        function scrollToBottom() {
+            const container = document.getElementById('chat-container');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Voice chat functionality with streaming responses
+        async function toggleVoice() {
+            const button = document.getElementById('voice-button');
+            
+            if (!isRecording) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    initializeWebSocket();
+                    
+                    mediaRecorder = new MediaRecorder(stream);
+                    mediaRecorder.ondataavailable = (event) => {
+                        if (event.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(event.data);
+                        }
+                    };
+                    
+                    // Set up periodic buffer flush
+                    const bufferInterval = setInterval(flushResponseBuffer, 100);
+                    
+                    mediaRecorder.onstop = () => {
+                        clearInterval(bufferInterval);
+                        flushResponseBuffer();
+                    };
+                    
+                    mediaRecorder.start(100);
+                    isRecording = true;
+                    button.textContent = 'Stop Voice';
+                    button.style.backgroundColor = '#dc3545';
+                    addMessage('Voice chat started...', 'system');
+                } catch (error) {
+                    console.error('Error accessing microphone:', error);
+                    addMessage('Error: Could not access microphone', 'system');
+                }
+            } else {
+                if (mediaRecorder) {
+                    mediaRecorder.stop();
+                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                }
+                if (ws) {
+                    ws.close();
+                }
+                isRecording = false;
+                button.textContent = 'Start Voice';
+                button.style.backgroundColor = '#007bff';
+                addMessage('Voice chat stopped', 'system');
+                currentMessageDiv = null;
+                responseBuffer = [];
+            }
+        }
+
+        function initializeWebSocket() {
+            if (ws) {
+                ws.close();
+            }
+
+            ws = new WebSocket(`ws://${window.location.host}/chat/voice`);
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                updateConnectionStatus(true);
+                reconnectAttempts = 0;
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'response_delta') {
+                    if (!currentMessageDiv) {
+                        currentMessageDiv = document.createElement('div');
+                        currentMessageDiv.className = 'message bot-message';
+                        document.getElementById('chat-container').appendChild(currentMessageDiv);
+                    }
+                    
+                    responseBuffer.push(data.delta);
+                    // Process buffer every 100ms or when it reaches 5 items
+                    if (responseBuffer.length >= 5) {
+                        flushResponseBuffer();
+                    }
+                } else if (data.type === 'response_complete') {
+                    flushResponseBuffer();
+                    if (data.response && currentMessageDiv.textContent !== data.response) {
+                        currentMessageDiv.textContent = data.response;
+                    }
+                    currentMessageDiv = null;
+                    scrollToBottom();
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateConnectionStatus(false);
+                scheduleReconnect();
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+                updateConnectionStatus(false);
+                if (isRecording) {
+                    scheduleReconnect();
+                }
+            };
+        }
+
+        function flushResponseBuffer() {
+            if (responseBuffer.length > 0 && currentMessageDiv) {
+                currentMessageDiv.textContent += responseBuffer.join('');
+                responseBuffer = [];
+                scrollToBottom();
+            }
+        }
+
+        function scheduleReconnect() {
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+            }
+            
+            if (reconnectAttempts < 5) {
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+                reconnectTimeout = setTimeout(() => {
+                    console.log(`Attempting to reconnect (attempt ${reconnectAttempts + 1})`);
+                    initializeWebSocket();
+                    reconnectAttempts++;
+                }, delay);
+            } else {
+                console.log('Max reconnection attempts reached');
+                if (isRecording) {
+                    toggleVoice(); // Stop recording
+                }
+            }
+        }
+
+        // Handle Enter key in input
+        document.getElementById('message-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
