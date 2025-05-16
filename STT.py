@@ -8,36 +8,38 @@ import threading
 import queue
 import requests
 import logging
-from typing import Optional, Tuple, Generator
+from typing import Optional, Tuple, Generator, Any
 
 
 class STT:
     """Speech-to-Text class using OpenAI's realtime transcription API"""
     
-    def __init__(self, api_key: Optional[str] = None, log_level=logging.INFO):
+    def __init__(self, api_key: Optional[str] = None, 
+                 log_level=logging.INFO, 
+                 log_file="stt.log",
+                 audio_input_stream=None):
         """Initialize the STT class
         
         Args:
             api_key: OpenAI API key. If None, will try to get from OPENAI_API_KEY env var
             log_level: Logging level
+            log_file: Path to log file
+            audio_input_stream: Optional external audio stream to use instead of mic
         """
-        # Setup logging
+        # Setup logging to file
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(log_level)
         if not self.logger.handlers:
             # Create logs directory if it doesn't exist
-            os.makedirs('logs', exist_ok=True)
-            
-            # Setup file handler with a rotating file handler
-            log_file = os.path.join('logs', 'stt.log')
+            log_dir = os.path.dirname(log_file)
+            if log_dir and not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+                
             handler = logging.FileHandler(log_file)
-            formatter = logging.Formatter('%(message)s')
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
-            
-            # Prevent logs from propagating to the root logger (console)
-            self.logger.propagate = False
-                
+        
         # API configuration
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
@@ -60,6 +62,9 @@ class STT:
         self.audio_queue = queue.Queue()
         self.delta_transcript_queue = queue.Queue()
         self.full_transcript_queue = queue.Queue()
+        
+        # External audio input stream
+        self.external_audio_stream = audio_input_stream
         
         # WebSocket and threads
         self.ws = None
@@ -154,6 +159,12 @@ class STT:
     def record_audio(self):
         """Record audio from microphone and put chunks in queue"""
         self.logger.info("Starting audio recording")
+        
+        # If external audio stream is provided, don't use microphone
+        if self.external_audio_stream:
+            self.logger.info("Using external audio stream")
+            return
+            
         audio = pyaudio.PyAudio()
         stream = audio.open(format=self.FORMAT, channels=self.CHANNELS,
                         rate=self.RATE, input=True, frames_per_buffer=self.CHUNK)
@@ -200,7 +211,19 @@ class STT:
         finally:
             self.logger.info("Audio transmission stopped")
 
-    def delta_stream(self):
+    def feed_audio(self, audio_chunk):
+        """Feed audio chunk from external source to the queue
+        
+        Args:
+            audio_chunk: PCM16 audio chunk bytes or None to signal end of stream
+        """
+        if not self.keep_running:
+            return False
+            
+        self.audio_queue.put(audio_chunk)
+        return True
+
+    def delta_stream(self) -> Generator[str, None, None]:
         """Generator for delta transcription stream"""
         while self.keep_running:
             try:
@@ -209,7 +232,7 @@ class STT:
             except queue.Empty:
                 continue  # No new delta, continue loop
 
-    def full_transcript_stream(self):
+    def full_transcript_stream(self) -> Generator[str, None, None]:
         """Generator for full transcript stream"""
         while self.keep_running:
             try:
@@ -218,9 +241,12 @@ class STT:
             except queue.Empty:
                 continue  # No new transcript, continue loop
 
-    def start(self) -> Tuple[Generator, Generator]:
+    def start(self, use_external_audio=False) -> Tuple[Generator[str, None, None], Generator[str, None, None]]:
         """Start the STT service
         
+        Args:
+            use_external_audio: If True, will not start internal audio recording thread
+            
         Returns:
             Tuple of (delta_stream, full_transcript_stream) generators
         """
@@ -268,9 +294,10 @@ class STT:
             raise RuntimeError("Timed out waiting for session creation")
         
         # Start audio recording and transmission threads
-        self.audio_thread = threading.Thread(target=self.record_audio)
-        self.audio_thread.daemon = True
-        self.audio_thread.start()
+        if not use_external_audio:
+            self.audio_thread = threading.Thread(target=self.record_audio)
+            self.audio_thread.daemon = True
+            self.audio_thread.start()
         
         self.transmit_thread = threading.Thread(target=self.transmit_audio)
         self.transmit_thread.daemon = True
@@ -300,20 +327,25 @@ class STT:
         self.logger.info("STT service stopped")
 
 
+# Example usage
 if __name__ == "__main__":
-    stt = STT(log_level=logging.INFO)
+    # Setup basic logging
+    logging.basicConfig(level=logging.INFO)
+    
+    # Create STT instance
+    stt = STT()
     
     try:
         # Start STT and get stream generators
         delta_stream, full_transcript_stream = stt.start()
         
         # Print deltas as they come
-        delta_thread = threading.Thread(target=lambda: [print(d, end='', flush=True) for d in delta_stream])
+        delta_thread = threading.Thread(target=lambda: [print(d, end='') for d in delta_stream])
         delta_thread.daemon = True
         delta_thread.start()
         
         # Print full transcripts as they come
-        full_thread = threading.Thread(target=lambda: [print(f"\nFULL: {t}", flush=True) for t in full_transcript_stream])
+        full_thread = threading.Thread(target=lambda: [print(f"\nFULL: {t}") for t in full_transcript_stream])
         full_thread.daemon = True
         full_thread.start()
         

@@ -3,5 +3,3 @@ __pycache__
 .DS_Store
 playground
 logs
-static
-main.py

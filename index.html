@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech-to-Text</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .transcript {
+            border: 1px solid #ddd;
+            padding: 15px;
+            min-height: 200px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+        }
+        .status {
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Speech-to-Text</h1>
+        
+        <div class="controls">
+            <button id="startBtn">Start Recording</button>
+            <button id="stopBtn" disabled>Stop Recording</button>
+        </div>
+        
+        <div class="status" id="status">Not connected</div>
+        
+        <div>
+            <h3>Transcript</h3>
+            <div class="transcript" id="transcript"></div>
+        </div>
+    </div>
+
+    <script>
+        // DOM elements
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusElement = document.getElementById('status');
+        const transcriptElement = document.getElementById('transcript');
+        
+        // WebSocket connection
+        let socket = null;
+        
+        // Audio context and recorder
+        let audioContext = null;
+        let mediaStream = null;
+        let processor = null;
+        let recording = false;
+        
+        // Initialize
+        async function initialize() {
+            try {
+                // Setup WebSocket
+                socket = new WebSocket(`ws://${window.location.host}/ws/audio`);
+                
+                socket.onopen = () => {
+                    statusElement.textContent = 'Connected';
+                    startBtn.disabled = false;
+                };
+                
+                socket.onclose = () => {
+                    statusElement.textContent = 'Disconnected';
+                    startBtn.disabled = true;
+                    stopBtn.disabled = true;
+                    stopRecording();
+                };
+                
+                socket.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    statusElement.textContent = 'Error: ' + error.message;
+                };
+                
+                socket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'delta') {
+                            // Append delta to transcript
+                            transcriptElement.textContent += data.text;
+                        } else if (data.type === 'full') {
+                            // Replace with full transcript
+                            transcriptElement.textContent = data.text;
+                        } else if (data.type === 'status') {
+                            statusElement.textContent = data.message;
+                        }
+                    } catch (error) {
+                        console.error('Error processing message:', error);
+                    }
+                };
+            } catch (error) {
+                console.error('Initialization error:', error);
+                statusElement.textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        // Start recording
+        async function startRecording() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                
+                // Get user media
+                mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                
+                // Create script processor
+                processor = audioContext.createScriptProcessor(1024, 1, 1);
+                
+                // Connect nodes
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                // Process audio data
+                processor.onaudioprocess = (e) => {
+                    if (!recording) return;
+                    
+                    // Get audio data
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    
+                    // Convert float32 to int16
+                    const pcmData = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        pcmData[i] = inputData[i] * 0x7FFF;
+                    }
+                    
+                    // Send data to server
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        socket.send(pcmData.buffer);
+                    }
+                };
+                
+                recording = true;
+                statusElement.textContent = 'Recording...';
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                
+                // Clear previous transcript
+                transcriptElement.textContent = '';
+                
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                statusElement.textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        // Stop recording
+        function stopRecording() {
+            recording = false;
+            
+            if (processor) {
+                processor.disconnect();
+                processor = null;
+            }
+            
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+            
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            
+            statusElement.textContent = 'Stopped';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+        
+        // Event listeners
+        startBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+        
+        // Initialize on page load
+        window.addEventListener('load', initialize);
+    </script>
+</body>
+</html>

@@ -3,12 +3,12 @@ Commited:
 - stream output of LLM
 - Interupt LLM's response genaration
 - rewrote whole STT from scracth
-
-On this Commit:
 - converted STT into a class and logs in a separeate file
 
-TO-DOs:
+On this Commit:
 - write main which exposes websocket for web
+
+TO-DOs:
 - write simple index.html which records audio and desplayes incomming text
 - integrate index and main
 - rewrite LLM
