@@ -33,5 +33,7 @@ Idea:
         LLM streams text as input to TTS
         audio stream from TTS as outgoing voice to twilio
 
+3. can use whisper or faster-whisper with VAD locally
+
         
         

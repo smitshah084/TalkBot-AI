@@ -16,7 +16,7 @@ class STT:
     
     def __init__(self, api_key: Optional[str] = None, 
                  log_level=logging.INFO, 
-                 log_file="stt.log",
+                 log_file="logs/stt.log",
                  audio_input_stream=None):
         """Initialize the STT class
         
@@ -36,7 +36,7 @@ class STT:
                 os.makedirs(log_dir)
                 
             handler = logging.FileHandler(log_file)
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            formatter = logging.Formatter('%(message)s')
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
         
@@ -329,10 +329,7 @@ class STT:
 
 # Example usage
 if __name__ == "__main__":
-    # Setup basic logging
-    logging.basicConfig(level=logging.INFO)
     
-    # Create STT instance
     stt = STT()
     
     try:

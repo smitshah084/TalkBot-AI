@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PCM16 Streaming</title>
+</head>
+<body>
+  <h2>Realtime PCM16 Audio Streaming</h2>
+  <button id="startBtn" onclick="start()">Start</button>
+  <button id="stopBtn" onclick="stop()" disabled>Stop</button>
+  <p id="output"></p>
+
+  <script>
+    let audioContext;
+    let processor;
+    let socket;
+    let mediaStream;
+    let isStreaming = false;
+
+    async function start() {
+      try {
+        document.getElementById("startBtn").disabled = true;
+        document.getElementById("stopBtn").disabled = false;
+        document.getElementById("output").innerText = "Starting stream...\n";
+        
+        // Create WebSocket connection
+        socket = new WebSocket("ws://localhost:8000/ws");
+        
+        socket.onmessage = e => {
+          document.getElementById("output").innerText += e.data + "\n";
+        };
+        
+        socket.onclose = () => {
+          console.log("WebSocket closed");
+          cleanupResources();
+        };
+        
+        socket.onerror = (error) => {
+          console.error("WebSocket error:", error);
+          cleanupResources();
+        };
+        
+        // Wait for socket to be open before proceeding
+        await new Promise((resolve, reject) => {
+          socket.onopen = resolve;
+          socket.onerror = reject;
+        });
+
+        // Setup audio pipeline
+        audioContext = new AudioContext({ sampleRate: 16000 });
+        const workletCode = `
+        class PCMProcessor extends AudioWorkletProcessor {
+          process(inputs) {
+            const input = inputs[0];
+            if (input.length > 0) {
+              const pcmChunk = input[0]; // mono channel
+              const buffer = new ArrayBuffer(pcmChunk.length * 2); // 16-bit
+              const view = new DataView(buffer);
+              for (let i = 0; i < pcmChunk.length; i++) {
+                let sample = Math.max(-1, Math.min(1, pcmChunk[i]));
+                view.setInt16(i * 2, sample * 0x7FFF, true); // little-endian
+              }
+              this.port.postMessage(buffer);
+            }
+            return true;
+          }
+        }
+        registerProcessor("pcm-processor", PCMProcessor);
+      `;
+
+        const blob = new Blob([workletCode], { type: "application/javascript" });
+        const blobURL = URL.createObjectURL(blob);
+        await audioContext.audioWorklet.addModule(blobURL);
+        
+        // Get microphone access
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const source = audioContext.createMediaStreamSource(mediaStream);
+        processor = new AudioWorkletNode(audioContext, "pcm-processor");
+
+        processor.port.onmessage = (event) => {
+          if (socket && socket.readyState === WebSocket.OPEN && isStreaming) {
+            socket.send(event.data);
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        
+        isStreaming = true;
+        console.log("Streaming started");
+      } catch (error) {
+        console.error("Error starting stream:", error);
+        document.getElementById("output").innerText += `Error: ${error.message}\n`;
+        cleanupResources();
+      }
+    }
+
+    function stop() {
+      console.log("Stop button clicked");
+      document.getElementById("output").innerText += "Stopping stream...\n";
+      
+      // Signal stop immediately
+      isStreaming = false;
+      
+      // Send end signal as bytes
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        const endSignal = new Uint8Array(5);
+        const encoder = new TextEncoder();
+        const encodedData = encoder.encode("_END_");
+        endSignal.set(encodedData);
+        socket.send(endSignal.buffer);
+        
+        // Give backend a moment to process end signal before closing
+        setTimeout(() => {
+          if (socket) {
+            socket.close();
+            socket = null;
+          }
+          cleanupResources();
+        }, 200);
+      } else {
+        cleanupResources();
+      }
+    }
+    
+    function cleanupResources() {
+      isStreaming = false;
+      
+      if (processor) {
+        processor.port.onmessage = null;
+        processor.disconnect();
+        processor = null;
+      }
+
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => {
+          track.stop();
+          console.log("Audio track stopped");
+        });
+        mediaStream = null;
+      }
+
+      if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close().then(() => {
+          console.log("AudioContext closed");
+          audioContext = null;
+        }).catch(err => {
+          console.error("Error closing AudioContext:", err);
+        });
+      }
+      
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("stopBtn").disabled = true;
+      document.getElementById("output").innerText += "Stream stopped.\n";
+    }
+
+    // Ensure cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+      stop();
+    });
+  </script>
+</body>
+</html>
