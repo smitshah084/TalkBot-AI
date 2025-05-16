@@ -2,9 +2,10 @@ Commited:
 - session management with LLM
 - stream output of LLM
 - Interupt LLM's response genaration
+- rewrote whole STT from scracth
 
 On this Commit:
-- rewrote whole STT from scracth
+- converted STT into a class and logs in a separeate file
 
 TO-DOs:
 - write main which exposes websocket for web
