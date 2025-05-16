@@ -1,12 +1,22 @@
 Commited:
 - session management with LLM
 - stream output of LLM
-
-On this Commit:
 - Interupt LLM's response genaration
 
+On this Commit:
+- rewrote whole STT from scracth
+
 TO-DOs:
-- Stream LLM's input
+- write main which exposes websocket for web
+- write simple index.html which records audio and desplayes incomming text
+- integrate index and main
+- rewrite LLM
+- integrate LLM and main
+- update index to interact with LLM
+- rewrite TTS
+- integrate TTS and main
+- update index to stream audio output
+- 
 
 Idea:
 1. PS: Stream LLM's input

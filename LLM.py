@@ -3,7 +3,7 @@ import os
 import websocket
 import threading
 import time
-import readline  # For better command line input handling
+import readline
 import sys
 import select
 import tty
