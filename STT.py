@@ -35,6 +35,8 @@ class STT:
             if log_dir and not os.path.exists(log_dir):
                 os.makedirs(log_dir)
                 
+            open(log_file, 'w').close()
+            
             handler = logging.FileHandler(log_file)
             formatter = logging.Formatter('%(message)s')
             handler.setFormatter(formatter)
@@ -188,7 +190,9 @@ class STT:
         try:
             while self.keep_running:
                 audio_chunk = self.audio_queue.get(timeout=1)
+                self.logger.debug(" got an audio chunk ")
                 if audio_chunk is None:
+                    self.logger.debug(" found an empty audio chunk")
                     break  # Stop if sentinel received
                     
                 audio_base64 = base64.b64encode(audio_chunk).decode('utf-8')

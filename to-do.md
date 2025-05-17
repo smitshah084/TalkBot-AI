@@ -6,9 +6,10 @@ Commited:
 - converted STT into a class and logs in a separeate file
 
 On this Commit:
-- write main which exposes websocket for web
+- 
 
 TO-DOs:
+- write main which exposes websocket for web
 - write simple index.html which records audio and desplayes incomming text
 - integrate index and main
 - rewrite LLM
