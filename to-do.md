@@ -6,7 +6,7 @@ Commited:
 - converted STT into a class and logs in a separeate file
 
 On this Commit:
-- 
+- LLM<->STT : interrupt works!
 
 TO-DOs:
 - write main which exposes websocket for web

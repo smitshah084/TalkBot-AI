@@ -16,7 +16,7 @@ class OpenAIRealtimeChat:
     """A class to interact with OpenAI's Realtime API."""
     
     def __init__(self, model="gpt-4o-mini-realtime-preview-2024-12-17", debug_mode=False, 
-                 input_mode="terminal", input_stream=None, input_callback=None):
+                 input_mode="terminal", input_stream=None, input_callback=None, stt_instance=None):
         """Initialize the chat client.
         
         Args:
@@ -71,6 +71,15 @@ class OpenAIRealtimeChat:
             "on_error": self.on_error,
             "on_close": self.on_close
         }
+        
+                
+        # Add STT instance
+        self.stt_instance = stt_instance
+        
+        # Register for speech events if STT instance provided
+        if self.stt_instance:
+            self.stt_instance.register_event_handler("speech_started", self.on_speech_started)
+
         
     def save_terminal_settings(self):
         """Save the terminal settings to restore later."""
@@ -259,6 +268,13 @@ class OpenAIRealtimeChat:
     def on_close(self, ws, close_status_code, close_msg):
         """Callback when WebSocket connection is closed."""
         print(f"Connection closed: {close_status_code} - {close_msg}")
+        
+    def on_speech_started(self, audio_start_ms):
+        """Handle speech started event from STT"""
+        # Interrupt current response when speech is detected
+        if self.response_in_progress:
+            self.interrupt_response()
+            print("\n\n--- Response interrupted by speech ---\n")
     
     def interrupt_response(self):
         """Interrupt the current response generation."""
@@ -267,6 +283,12 @@ class OpenAIRealtimeChat:
             self.interrupted = True
             self.response_in_progress = False
             print("\n\n--- Response interrupted ---\n")
+            
+            # If we're in stream mode, we should prepare for the incoming transcription
+            if self.input_mode == "stream":
+                # Clear any pending input to prioritize the new speech
+                with self.input_queue_lock:
+                    self.input_queue = []
             return True
         return False
     
@@ -475,7 +497,8 @@ if __name__ == "__main__":
         # Create and run the chat client with the stream
         chat_client = OpenAIRealtimeChat(
             input_mode="stream",
-            input_stream=full_transcript_stream
+            input_stream=full_transcript_stream,
+            stt_instance=stt
         )
         chat_client.run()
         

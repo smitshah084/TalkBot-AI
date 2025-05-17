@@ -74,6 +74,21 @@ class STT:
         self.audio_thread = None
         self.transmit_thread = None
         
+        # for interuption
+        self.event_handlers = {
+            "speech_started": [],
+            "speech_stopped": [],
+            "transcript_delta": [],
+            "transcript_complete": []
+        }
+    
+    def register_event_handler(self, event_type, handler_func):
+        """Register a callback function for specific events"""
+        if event_type in self.event_handlers:
+            self.event_handlers[event_type].append(handler_func)
+            return True
+        return False
+    
     def get_ephemeral_token(self):
         """Get an ephemeral token from OpenAI for the realtime API"""
         url = "https://api.openai.com/v1/realtime/transcription_sessions"
@@ -126,9 +141,15 @@ class STT:
             self.speech_started = data.get('audio_start_ms')
             self.logger.info(f'Speech started at {self.speech_started} ms')
             
+            for handler in self.event_handlers["speech_started"]:
+                handler(self.speech_started)
+            
         elif type_ == 'input_audio_buffer.speech_stopped':
             self.speech_stopped = data.get('audio_end_ms')
             self.logger.info(f'Speech ended at {self.speech_stopped} ms')
+            
+            for handler in self.event_handlers["speech_stopped"]:
+                handler(self.speech_stopped)
             
         elif type_ == 'input_audio_buffer.committed':
             self.logger.debug("Audio buffer committed")
