@@ -1,19 +1,31 @@
-import asyncio
+from RealtimeTTS import TextToAudioStream, OpenAIEngine
+from LLM import OpenAIRealtimeChat
+from STT import STT
 
-from openai import AsyncOpenAI
-from openai.helpers import LocalAudioPlayer
+def dummy_generator():
+    yield "Hey guys! "
+    yield "These here are "
+    yield "realtime spoken words "
+    yield "based on openai "
+    yield "tts text synthesis."
 
-openai = AsyncOpenAI()
+        
+stt = STT()
 
-async def main() -> None:
-    async with openai.audio.speech.with_streaming_response.create(
-        model="gpt-4o-mini-tts",
-        voice="coral",
-        input="Today is a wonderful day to build something people love!",
-        instructions="Speak in a cheerful and positive tone.",
-        response_format="pcm",
-    ) as response:
-        await LocalAudioPlayer().play(response)
+# Start STT and get the full transcript stream
+_, full_transcript_stream = stt.start()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# Create and run the chat client with the stream
+chat_client = OpenAIRealtimeChat(
+    input_mode="stream",
+    input_stream=full_transcript_stream,
+    stt_instance=stt
+)
+
+engine = OpenAIEngine(model="tts-1", voice="nova")
+stream = TextToAudioStream(engine)
+
+stream.feed(chat_client.run())
+
+print("Synthesizing...")
+stream.play()

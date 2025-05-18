@@ -10,7 +10,7 @@ import tty
 import termios
 from dotenv import load_dotenv
 from typing import Optional, Iterator, Callable, Dict, Any, Tuple, List, Union
-
+import queue
 
 class OpenAIRealtimeChat:
     """A class to interact with OpenAI's Realtime API."""
@@ -80,6 +80,7 @@ class OpenAIRealtimeChat:
         if self.stt_instance:
             self.stt_instance.register_event_handler("speech_started", self.on_speech_started)
 
+        self.response_queue = queue.Queue()
         
     def save_terminal_settings(self):
         """Save the terminal settings to restore later."""
@@ -244,6 +245,7 @@ class OpenAIRealtimeChat:
                         if text_delta:
                             print(text_delta, end="", flush=True)
                             self.current_response += text_delta
+                            self.response_queue.put(text_delta)
                 
                 elif event_type == "response.done":
                     self.response_in_progress = False
@@ -439,15 +441,12 @@ class OpenAIRealtimeChat:
             if self.input_mode == "terminal":
                 self.set_raw_input_mode()
     
-    def run(self):
-        """Run the chat client."""
+    def run(self) -> Iterator[str]:  # Modify method to return an Iterator
         try:
-            # Save original terminal settings (only for terminal mode)
             if self.input_mode == "terminal":
                 self.save_terminal_settings()
-            
-            # Set up WebSocket connection
-            websocket.enableTrace(self.debug_mode)
+
+            # websocket.enableTrace(self.debug_mode)
             self.ws = websocket.WebSocketApp(
                 self.url,
                 header=self.headers,
@@ -456,29 +455,28 @@ class OpenAIRealtimeChat:
                 on_error=self.on_error,
                 on_close=self.on_close
             )
-            
-            # Start WebSocket connection in a separate thread
+
             wst = threading.Thread(target=self.ws.run_forever)
             wst.daemon = True
             wst.start()
-            
-            # Start input thread
+
             input_thread = threading.Thread(target=self.input_thread_function)
             input_thread.daemon = True
             input_thread.start()
-            
-            # Wait for threads to complete
-            try:
-                while wst.is_alive() and not self.should_exit.is_set():
-                    time.sleep(0.1)
-            except KeyboardInterrupt:
-                print("\nInterrupted by user, shutting down...")
-                self.should_exit.set()
-                self.ws.close()
+
+            while not self.should_exit.is_set():
+                try:
+                    delta = self.response_queue.get(timeout=0.1)
+                    yield delta
+                except queue.Empty:
+                    continue
+        except Exception as e:
+            print(f"Error in run generator: {e}")
         finally:
-            # Always restore terminal settings when exiting (only for terminal mode)
             if self.input_mode == "terminal":
                 self.restore_terminal_settings()
+            self.ws.close()
+            self.should_exit.set()
 
 
 if __name__ == "__main__":
@@ -500,7 +498,9 @@ if __name__ == "__main__":
             input_stream=full_transcript_stream,
             stt_instance=stt
         )
-        chat_client.run()
+        
+        for response_delta in chat_client.run():
+            print(response_delta, end="", flush=True)
         
     except ImportError:
         print("STT module not available. This is just an example.")
