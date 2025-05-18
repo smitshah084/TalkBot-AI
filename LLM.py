@@ -63,15 +63,6 @@ class OpenAIRealtimeChat:
         self.input_queue_lock = threading.Lock()
         self.new_input_event = threading.Event()
         self.should_exit = threading.Event()
-        
-        # WebSocket event handlers
-        self.ws_handlers = {
-            "on_open": self.on_open,
-            "on_message": self.on_message,
-            "on_error": self.on_error,
-            "on_close": self.on_close
-        }
-        
                 
         # Add STT instance
         self.stt_instance = stt_instance
