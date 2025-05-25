@@ -22,14 +22,26 @@ class TTS:
             self.stt_instance.register_event_handler("speech_started", self.on_speech_started)
             self.stt_instance.register_event_handler("speech_stopped",self.on_speech_stopped)
             
-    def on_speech_started(self,time):
+    def on_speech_started(self, time):
+        print("Speech detected - attempting to pause audio...")
         if self.stream:
-            self.stream.pause()
+            try:
+                self.stream.pause()
+            except Exception as e:
+                print(f"Error pausing stream: {e}")
+        else:
+            print("No active audio stream to pause")
         self.is_speaking = True
-    
-    def on_speech_stopped(self,time):
+
+    def on_speech_stopped(self, time):
+        print("Speech ended - attempting to resume audio...")
         if self.stream:
-            self.stream.resume()
+            try:
+                self.stream.resume()
+            except Exception as e:
+                print(f"Error resuming stream: {e}")
+        else:
+            print("No active audio stream to resume")
         self.is_speaking = False
         
         
@@ -57,9 +69,6 @@ class TTS:
 
         print("Synthesizing...")
         self.stream.play_async(
-            on_sentence_synthesized=self.realtime_show,
-            log_synthesized_text=False,
-            minimum_sentence_length=2
         )
 
 tts = TTS(stt_instance=stt)

@@ -100,7 +100,8 @@ class STT:
         body = {
             "input_audio_format": "pcm16",
             "input_audio_transcription": {
-                "model": "gpt-4o-transcribe"
+                "model": "gpt-4o-transcribe",
+                "prompt": "The following conversation is a between two indian people.",
             },
             "turn_detection": {
                 "type": "server_vad",
@@ -109,7 +110,7 @@ class STT:
                 "silence_duration_ms": 500
             },
             "input_audio_noise_reduction": {
-                "type": "near_field"
+                "type": "far_field"
             },
             "include": ["item.input_audio_transcription.logprobs"]
         }
@@ -140,6 +141,7 @@ class STT:
         elif type_ == 'input_audio_buffer.speech_started':
             self.speech_started = data.get('audio_start_ms')
             self.logger.info(f'Speech started at {self.speech_started} ms')
+            self.speech_started_time = time.time()
             
             for handler in self.event_handlers["speech_started"]:
                 handler(self.speech_started)
@@ -147,22 +149,31 @@ class STT:
         elif type_ == 'input_audio_buffer.speech_stopped':
             self.speech_stopped = data.get('audio_end_ms')
             self.logger.info(f'Speech ended at {self.speech_stopped} ms')
+            self.speech_stopped_time = time.time()
             
             for handler in self.event_handlers["speech_stopped"]:
                 handler(self.speech_stopped)
             
         elif type_ == 'input_audio_buffer.committed':
+            self.speech_commited = time.time()
             self.logger.debug("Audio buffer committed")
             
         elif type_ == 'conversation.item.input_audio_transcription.delta':
+            self.transciption_start = time.time()
             delta = data.get('delta')
             self.logger.debug(f"Transcription delta: {delta}")
             self.delta_transcript_queue.put(delta)
             
         elif type_ == 'conversation.item.input_audio_transcription.completed':
+            self.transciption_end = time.time()
             transcript = data.get('transcript')
             self.logger.info(f"Full transcript: {transcript}")
             self.full_transcript_queue.put(transcript)
+            
+            self.logger.info(f"Audio time : {self.speech_stopped_time-self.speech_started_time}")
+            self.logger.info(f"Text length : {len(transcript)}")
+            self.logger.info(f"first delta Delay : {self.transciption_start - self.speech_commited}")
+            self.logger.info(f"transcription time : {self.transciption_end - self.transciption_start}")
         
         elif type_ == 'conversation.item.created':
             self.logger.debug("Conversation item created")

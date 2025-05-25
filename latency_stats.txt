@@ -1,0 +1,29 @@
+Full transcript: Hello.
+Audio time : 1.3531770706176758
+Text length : 6
+first delta Delay : 0.5469810962677002
+transcription time : 0.01669001579284668
+
+Full transcript: Hello, my name is Mitcha and I am studying in Delhi University.
+Audio time : 6.5004799365997314
+Text length : 63
+first delta Delay : 1.026111125946045
+transcription time : 0.0009758472442626953
+
+Audio time : 6.777673959732056
+Text length : 79
+first delta Delay : 0.8009171485900879
+transcription time : 0.0009958744049072266
+
+Full transcript: My name is Smritsha and I am a student of Dharamsi Desai University.
+Audio time : 5.865909099578857
+Text length : 68
+first delta Delay : 1.068192720413208
+transcription time : 0.0009739398956298828
+
+Full transcript: मेरा नाम स्मित शाह है और मैं धर्मसी देसाई यूनिवर्सिटी का स्टुडेंट हूँ.
+Audio time : 8.30931806564331
+Text length : 70
+first delta Delay : 1.318476915359497
+transcription time : 0.03566884994506836
+
